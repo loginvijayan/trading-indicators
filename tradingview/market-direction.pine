@@ -1,0 +1,176 @@
+//@version=5
+indicator("Nifty Option Market Direction by VJN", overlay = false, max_lines_count=500, max_labels_count=50)
+
+
+// ─── Inputs for Option Symbols ────────────────
+autoDetect = input.bool(true, "Auto-detect symbols from NSE:NIFTY")
+atmCallSymbolIn = input.symbol("NSE:NIFTY250930C24550", "ATM Call Symbol (manual)")
+atmPutSymbolIn  = input.symbol("NSE:NIFTY250930P24600", "ATM Put Symbol (manual)")
+itmCallSymbolIn = input.symbol("NSE:NIFTY250930C24800", "ITM Call Symbol (manual)")
+itmPutSymbolIn  = input.symbol("NSE:NIFTY250930P24650", "ITM Put Symbol (manual)")
+
+// Auto-detect helper: derive next weekly expiry (next Tuesday) and strikes
+underlyingSym = "NSE:NIFTY"
+underlyingOpen = request.security(underlyingSym, "D", open)
+
+// nearest 50 strike
+atmStrike = math.round(underlyingOpen / 50) * 50
+itmCallStrike = atmStrike - 100
+itmPutStrike  = atmStrike + 100
+
+// compute next Tuesday (always future)
+_day = dayofweek(time)
+daysUntil = (dayofweek.tuesday - _day + 7) % 7
+daysUntil := daysUntil == 0 ? 7 : daysUntil
+expiryTs = time + daysUntil * 24 * 60 * 60 * 1000
+
+yy = year(expiryTs) % 100
+mm = month(expiryTs)
+dd = dayofmonth(expiryTs)
+pad2(x) => x < 10 ? "0" + str.tostring(x) : str.tostring(x)
+ymd = str.tostring(yy) + pad2(mm) + pad2(dd)
+
+// Pine Script doesn't allow passing series (runtime) strings to request.security.
+// Keep manual symbol inputs for actual security calls. If autoDetect is enabled,
+// compute suggestion strings and show them in the table so user can copy-paste.
+atmCallSymbol = atmCallSymbolIn
+atmPutSymbol  = atmPutSymbolIn
+itmCallSymbol = itmCallSymbolIn
+itmPutSymbol  = itmPutSymbolIn
+
+// Suggestions (series strings suitable only for display/copy)
+suggestAtmCall = "NSE:NIFTY" + ymd + "C" + str.tostring(int(atmStrike))
+suggestAtmPut  = "NSE:NIFTY" + ymd + "P" + str.tostring(int(atmStrike))
+suggestItmCall = "NSE:NIFTY" + ymd + "C" + str.tostring(int(itmCallStrike))
+suggestItmPut  = "NSE:NIFTY" + ymd + "P" + str.tostring(int(itmPutStrike))
+
+showATM = input.bool(true, "Show ATM Candles")
+showITM = input.bool(true, "Show ITM Candles")
+
+// ─── Fetch OHLC for ATM & ITM ────────────────
+[atmC_o, atmC_h, atmC_l, atmC_c] = request.security(atmCallSymbol, timeframe.period, [open, high, low, close])
+[atmP_o, atmP_h, atmP_l, atmP_c] = request.security(atmPutSymbol,  timeframe.period, [open, high, low, close])
+[itmC_o, itmC_h, itmC_l, itmC_c] = request.security(itmCallSymbol, timeframe.period, [open, high, low, close])
+[itmP_o, itmP_h, itmP_l, itmP_c] = request.security(itmPutSymbol,  timeframe.period, [open, high, low, close])
+
+// ─── Yesterday values ────────────────────────
+atmC_yOpen = request.security(atmCallSymbol, "D", open[1])
+atmC_yHigh = request.security(atmCallSymbol, "D", high[1])
+atmC_yLow  = request.security(atmCallSymbol, "D", low[1])
+
+atmP_yOpen = request.security(atmPutSymbol, "D", open[1])
+atmP_yHigh = request.security(atmPutSymbol, "D", high[1])
+atmP_yLow  = request.security(atmPutSymbol, "D", low[1])
+
+itmC_yOpen = request.security(itmCallSymbol, "D", open[1])
+itmC_yHigh = request.security(itmCallSymbol, "D", high[1])
+itmC_yLow  = request.security(itmCallSymbol, "D", low[1])
+
+itmP_yOpen = request.security(itmPutSymbol, "D", open[1])
+itmP_yHigh = request.security(itmPutSymbol, "D", high[1])
+itmP_yLow  = request.security(itmPutSymbol, "D", low[1])
+
+// ─── Crossovers ──────────────────────────────
+atmCross = ta.crossover(atmC_c, atmP_c) ? "ATM CALL>PUT" : ta.crossover(atmP_c, atmC_c) ? "ATM PUT>CALL" : ""
+itmCross = ta.crossover(itmC_c, itmP_c) ? "ITM CALL>PUT" : ta.crossover(itmP_c, itmC_c) ? "ITM PUT>CALL" : ""
+
+// ─── Status Conditions ───────────────────────
+isValid(x) => not na(x)
+
+// Helper to format values (must be defined at top-level)
+showVal(x) => isValid(x) ? str.tostring(x, format.mintick) : "-"
+
+// Per spec: comparisons use (Yesterday + Today value) sums
+atmCallPanic    = isValid(atmC_c) and isValid(atmC_yHigh) and isValid(atmC_o) and (atmC_c > (atmC_yHigh + atmC_o))
+atmPutSellPanic = isValid(atmP_c) and isValid(atmP_yHigh) and isValid(atmP_h) and (atmP_c > (atmP_yHigh + atmP_h))
+atmCallPB       = isValid(atmC_c) and isValid(atmC_yLow) and isValid(atmC_o) and (atmC_c > (atmC_yLow + atmC_o))
+atmPutPB        = isValid(atmP_c) and isValid(atmP_yLow) and isValid(atmP_o) and (atmP_c > (atmP_yLow + atmP_o))
+
+// Resolve global status with an if/else ladder (safer than chained ternary across lines)
+globalStatus = "SIDEWAYS"
+if atmCallPanic
+    globalStatus := "CALL PANIC"
+else if atmPutSellPanic
+    globalStatus := "SELL PANIC"
+else if atmCallPB
+    globalStatus := "CALL PROFIT BOOKING"
+else if atmPutPB
+    globalStatus := "PUT PROFIT BOOKING"
+
+// ─── Plot Candles ─────────────────────────────
+plotcandle(atmC_o, atmC_h, atmC_l, atmC_c, title="ATM Call",
+           color=(atmC_c >= atmC_o ? color.green : color.red),
+           display = showATM ? display.all : display.none)
+
+plotcandle(atmP_o, atmP_h, atmP_l, atmP_c, title="ATM Put",
+           color=(atmP_c >= atmP_o ? color.green : color.red),
+           display = showATM ? display.all : display.none)
+
+plotcandle(itmC_o, itmC_h, itmC_l, itmC_c, title="ITM Call",
+           color=(itmC_c >= itmC_o ? color.blue : color.red),
+           display = showITM ? display.all : display.none)
+
+plotcandle(itmP_o, itmP_h, itmP_l, itmP_c, title="ITM Put",
+           color=(itmP_c >= itmP_o ? color.blue : color.red),
+           display = showITM ? display.all : display.none)
+
+// ─── Table ───────────────────────────────────
+var table t = table.new(position.bottom_right, 3, 7, border_width=1)
+
+if barstate.islast
+    // Header: Strike | Yest Low | Yest High | Today Low | Today High | LTP | Status
+    table.cell(t, 0, 0, "Strike", text_color=color.white, bgcolor=color.black)
+    table.cell(t, 0, 1, "Yest Low")
+    table.cell(t, 0, 2, "Yest High")
+    table.cell(t, 0, 3, "Today Low")
+    table.cell(t, 0, 4, "Today High")
+    table.cell(t, 0, 5, "LTP")
+    table.cell(t, 0, 6, "Status")
+
+
+    // Per-instrument status (ATM)
+    // ATM status via if/else to avoid multiline ternary parsing issues
+    atmStatus = "SIDEWAYS"
+    if atmCallPanic
+        atmStatus := "CALL PANIC"
+    else if atmPutSellPanic
+        atmStatus := "SELL PANIC"
+    else if atmCallPB
+        atmStatus := "CALL PROFIT BOOKING"
+    else if atmPutPB
+        atmStatus := "PUT PROFIT BOOKING"
+
+    // ATM Row
+    table.cell(t, 1, 0, str.tostring(int(atmStrike)))
+    table.cell(t, 1, 1, showVal(atmC_yLow))
+    table.cell(t, 1, 2, showVal(atmC_yHigh))
+    table.cell(t, 1, 3, showVal(atmC_l))
+    table.cell(t, 1, 4, showVal(atmC_h))
+    table.cell(t, 1, 5, showVal(atmC_c))
+    table.cell(t, 1, 6, atmStatus)
+
+    // Per-instrument status (ITM)
+    itmCallPanic    = isValid(itmC_c) and isValid(itmC_yHigh) and isValid(itmC_o) and (itmC_c > (itmC_yHigh + itmC_o))
+    itmPutSellPanic = isValid(itmP_c) and isValid(itmP_yHigh) and isValid(itmP_h) and (itmP_c > (itmP_yHigh + itmP_h))
+    itmCallPB       = isValid(itmC_c) and isValid(itmC_yLow) and isValid(itmC_o) and (itmC_c > (itmC_yLow + itmC_o))
+    itmPutPB        = isValid(itmP_c) and isValid(itmP_yLow) and isValid(itmP_o) and (itmP_c > (itmP_yLow + itmP_o))
+
+    // ITM status via if/else to avoid multiline ternary parsing issues
+    itmStatus = "SIDEWAYS"
+    if itmCallPanic
+        itmStatus := "CALL PANIC"
+    else if itmPutSellPanic
+        itmStatus := "SELL PANIC"
+    else if itmCallPB
+        itmStatus := "CALL PROFIT BOOKING"
+    else if itmPutPB
+        itmStatus := "PUT PROFIT BOOKING"
+
+    // ITM Row
+    table.cell(t, 2, 0, str.tostring(int(itmCallStrike)))
+    table.cell(t, 2, 1, showVal(itmC_yLow))
+    table.cell(t, 2, 2, showVal(itmC_yHigh))
+    table.cell(t, 2, 3, showVal(itmC_l))
+    table.cell(t, 2, 4, showVal(itmC_h))
+    table.cell(t, 2, 5, showVal(itmC_c))
+    table.cell(t, 2, 6, itmStatus)
