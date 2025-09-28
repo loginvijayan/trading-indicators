@@ -58,17 +58,26 @@ atmC_yOpen = request.security(atmCallSymbol, "D", open[1])
 atmC_yHigh = request.security(atmCallSymbol, "D", high[1])
 atmC_yLow  = request.security(atmCallSymbol, "D", low[1])
 
+// Today's daily open (first candle open of today)
+atmC_todayOpen = request.security(atmCallSymbol, "D", open)
+
 atmP_yOpen = request.security(atmPutSymbol, "D", open[1])
 atmP_yHigh = request.security(atmPutSymbol, "D", high[1])
 atmP_yLow  = request.security(atmPutSymbol, "D", low[1])
+
+atmP_todayOpen = request.security(atmPutSymbol, "D", open)
 
 itmC_yOpen = request.security(itmCallSymbol, "D", open[1])
 itmC_yHigh = request.security(itmCallSymbol, "D", high[1])
 itmC_yLow  = request.security(itmCallSymbol, "D", low[1])
 
+itmC_todayOpen = request.security(itmCallSymbol, "D", open)
+
 itmP_yOpen = request.security(itmPutSymbol, "D", open[1])
 itmP_yHigh = request.security(itmPutSymbol, "D", high[1])
 itmP_yLow  = request.security(itmPutSymbol, "D", low[1])
+
+itmP_todayOpen = request.security(itmPutSymbol, "D", open)
 
 // ─── Crossovers ──────────────────────────────
 atmCross = ta.crossover(atmC_c, atmP_c) ? "ATM CALL>PUT" : ta.crossover(atmP_c, atmC_c) ? "ATM PUT>CALL" : ""
@@ -80,22 +89,30 @@ isValid(x) => not na(x)
 // Helper to format values (must be defined at top-level)
 showVal(x) => isValid(x) ? str.tostring(x, format.mintick) : "-"
 
-// Per spec: comparisons use (Yesterday + Today value) sums
-atmCallPanic    = isValid(atmC_c) and isValid(atmC_yHigh) and isValid(atmC_o) and (atmC_c > (atmC_yHigh + atmC_o))
-atmPutSellPanic = isValid(atmP_c) and isValid(atmP_yHigh) and isValid(atmP_h) and (atmP_c > (atmP_yHigh + atmP_h))
-atmCallPB       = isValid(atmC_c) and isValid(atmC_yLow) and isValid(atmC_o) and (atmC_c > (atmC_yLow + atmC_o))
-atmPutPB        = isValid(atmP_c) and isValid(atmP_yLow) and isValid(atmP_o) and (atmP_c > (atmP_yLow + atmP_o))
+// --- Helper boolean checks and status helper to reduce repetition ---
+isAbove(val, ref) => isValid(val) and isValid(ref) and (val > ref)
+isAboveBoth(val, ref1, ref2) =>  isAbove(val , ref1) and isAbove(val , ref2)
 
-// Resolve global status with an if/else ladder (safer than chained ternary across lines)
-globalStatus = "SIDEWAYS"
-if atmCallPanic
-    globalStatus := "CALL PANIC"
-else if atmPutSellPanic
-    globalStatus := "SELL PANIC"
-else if atmCallPB
-    globalStatus := "CALL PROFIT BOOKING"
-else if atmPutPB
-    globalStatus := "PUT PROFIT BOOKING"
+isPanicFn(v, yHigh, tOpen) => isAboveBoth(v, yHigh, tOpen)
+isProfitBookingFn(v, yLow, tOpen) => isAboveBoth(v, yLow, tOpen)
+
+statusForInstrument(closeVal, yHigh, yLow, todayOpen, isCall) =>
+    res = "SIDEWAYS"
+    // Require today's LTP (closeVal) to be above today's open before any statuses
+    if not isAbove(closeVal, todayOpen)
+        res := "SIDEWAYS"
+    else
+        if isCall
+            if isPanicFn(closeVal, yHigh, todayOpen)
+                res := "CALL PANIC"
+            else if isProfitBookingFn(closeVal, yLow, todayOpen)
+                res := "CALL PROFIT BOOKING"
+        else
+            if isPanicFn(closeVal, yHigh, todayOpen)
+                res := "SELL PANIC"
+            else if isProfitBookingFn(closeVal, yLow, todayOpen)
+                res := "PUT PROFIT BOOKING"
+    res
 
 // ─── Plot Candles ─────────────────────────────
 plotcandle(atmC_o, atmC_h, atmC_l, atmC_c, title="ATM Call",
@@ -128,19 +145,10 @@ if barstate.islast
     table.cell(t, 0, 6, "Status")
 
 
-    // Per-instrument status (ATM)
-    // ATM status via if/else to avoid multiline ternary parsing issues
-    atmStatus = "SIDEWAYS"
-    if atmCallPanic
-        atmStatus := "CALL PANIC"
-    else if atmPutSellPanic
-        atmStatus := "SELL PANIC"
-    else if atmCallPB
-        atmStatus := "CALL PROFIT BOOKING"
-    else if atmPutPB
-        atmStatus := "PUT PROFIT BOOKING"
-
-    // ATM Row
+    // ATM Row: compute status for both call and put; prefer call-derived status if present
+    atmCallStatus = statusForInstrument(atmC_c, atmC_yHigh, atmC_yLow, atmC_todayOpen, true)
+    atmPutStatus  = statusForInstrument(atmP_c, atmP_yHigh, atmP_yLow, atmP_todayOpen, false)
+    atmStatus = atmCallStatus != "SIDEWAYS" ? atmCallStatus : atmPutStatus
     table.cell(t, 1, 0, str.tostring(int(atmStrike)))
     table.cell(t, 1, 1, showVal(atmC_yLow))
     table.cell(t, 1, 2, showVal(atmC_yHigh))
@@ -149,24 +157,10 @@ if barstate.islast
     table.cell(t, 1, 5, showVal(atmC_c))
     table.cell(t, 1, 6, atmStatus)
 
-    // Per-instrument status (ITM)
-    itmCallPanic    = isValid(itmC_c) and isValid(itmC_yHigh) and isValid(itmC_o) and (itmC_c > (itmC_yHigh + itmC_o))
-    itmPutSellPanic = isValid(itmP_c) and isValid(itmP_yHigh) and isValid(itmP_h) and (itmP_c > (itmP_yHigh + itmP_h))
-    itmCallPB       = isValid(itmC_c) and isValid(itmC_yLow) and isValid(itmC_o) and (itmC_c > (itmC_yLow + itmC_o))
-    itmPutPB        = isValid(itmP_c) and isValid(itmP_yLow) and isValid(itmP_o) and (itmP_c > (itmP_yLow + itmP_o))
-
-    // ITM status via if/else to avoid multiline ternary parsing issues
-    itmStatus = "SIDEWAYS"
-    if itmCallPanic
-        itmStatus := "CALL PANIC"
-    else if itmPutSellPanic
-        itmStatus := "SELL PANIC"
-    else if itmCallPB
-        itmStatus := "CALL PROFIT BOOKING"
-    else if itmPutPB
-        itmStatus := "PUT PROFIT BOOKING"
-
-    // ITM Row
+    // ITM Row: compute status for both call and put; prefer call-derived status if present
+    itmCallStatus = statusForInstrument(itmC_c, itmC_yHigh, itmC_yLow, itmC_todayOpen, true)
+    itmPutStatus  = statusForInstrument(itmP_c, itmP_yHigh, itmP_yLow, itmP_todayOpen, false)
+    itmStatus = itmCallStatus != "SIDEWAYS" ? itmCallStatus : itmPutStatus
     table.cell(t, 2, 0, str.tostring(int(itmCallStrike)))
     table.cell(t, 2, 1, showVal(itmC_yLow))
     table.cell(t, 2, 2, showVal(itmC_yHigh))
@@ -174,3 +168,5 @@ if barstate.islast
     table.cell(t, 2, 4, showVal(itmC_h))
     table.cell(t, 2, 5, showVal(itmC_c))
     table.cell(t, 2, 6, itmStatus)
+
+
