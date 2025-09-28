@@ -13,10 +13,42 @@ itmPutSymbolIn  = input.symbol("NSE:NIFTY250930P24650", "ITM Put Symbol (manual)
 underlyingSym = "NSE:NIFTY"
 underlyingOpen = request.security(underlyingSym, "D", open)
 
+// Choose rounding behavior for ATM strike selection. If true, pick the next 50 above
+// the breakeven (useful when underlying is slightly above a lower strike, e.g., 24910 -> 24950)
+preferCeilATM = input.bool(true, "Prefer ATM ceiling (choose next 50 above underlying when not exact)")
+
 // nearest 50 strike
-atmStrike = math.round(underlyingOpen / 50) * 50
-itmCallStrike = atmStrike - 100
-itmPutStrike  = atmStrike + 100
+// Derive an approximate breakeven point from the underlying's open.
+// Assumption: breakeven ~ underlying open (premium not considered here).
+// Round the breakeven to the nearest 50 to pick standard option strikes.
+breakeven = underlyingOpen
+
+// Option to pick a call/put pair around breakeven so their average ~= underlying
+preferPairAroundBreakeven = input.bool(true, "Prefer call/put pair around breakeven (call=floor, put=ceil)")
+
+// declare strike vars so we can reassign with := inside conditional blocks
+var int atmCallStrike = na
+var int atmPutStrike  = na
+var int atmStrike     = na
+
+lowerStrike = math.floor(breakeven / 50) * 50
+upperStrike = math.ceil(breakeven / 50) * 50
+
+if preferPairAroundBreakeven
+    // choose a pair: call at lower strike, put at upper strike
+    atmCallStrike := lowerStrike
+    atmPutStrike  := upperStrike
+    // display strike is the average (approx breakeven)
+    atmStrike := int((atmCallStrike + atmPutStrike) / 2)
+else
+    breakevenStrike = preferCeilATM ? math.ceil(breakeven / 50) * 50 : math.round(breakeven / 50) * 50
+    atmStrike = breakevenStrike
+    atmCallStrike := atmStrike
+    atmPutStrike  := atmStrike
+
+// ITM offsets (kept as +/-100 from the corresponding ATM call/put by default)
+itmCallStrike = atmCallStrike - 100
+itmPutStrike  = atmPutStrike + 100
 
 // compute next Tuesday (always future)
 _day = dayofweek(time)
@@ -39,8 +71,8 @@ itmCallSymbol = itmCallSymbolIn
 itmPutSymbol  = itmPutSymbolIn
 
 // Suggestions (series strings suitable only for display/copy)
-suggestAtmCall = "NSE:NIFTY" + ymd + "C" + str.tostring(int(atmStrike))
-suggestAtmPut  = "NSE:NIFTY" + ymd + "P" + str.tostring(int(atmStrike))
+suggestAtmCall = "NSE:NIFTY" + ymd + "C" + str.tostring(int(atmCallStrike))
+suggestAtmPut  = "NSE:NIFTY" + ymd + "P" + str.tostring(int(atmPutStrike))
 suggestItmCall = "NSE:NIFTY" + ymd + "C" + str.tostring(int(itmCallStrike))
 suggestItmPut  = "NSE:NIFTY" + ymd + "P" + str.tostring(int(itmPutStrike))
 
@@ -114,13 +146,23 @@ statusForInstrument(closeVal, yHigh, yLow, todayOpen, isCall) =>
                 res := "PUT PROFIT BOOKING"
     res
 
+// Return a background color for a status string: panic=red, profit booking=green, else gray
+statusBg(status) =>
+    // default
+    bg = color.gray
+    if str.contains(status, "PANIC")
+        bg := color.new(color.red, 0)
+    else if str.contains(status, "PROFIT")
+        bg := color.new(color.green, 0)
+    bg
+
 // ─── Plot Candles ─────────────────────────────
 plotcandle(atmC_o, atmC_h, atmC_l, atmC_c, title="ATM Call",
            color=(atmC_c >= atmC_o ? color.green : color.red),
            display = showATM ? display.all : display.none)
 
 plotcandle(atmP_o, atmP_h, atmP_l, atmP_c, title="ATM Put",
-           color=(atmP_c >= atmP_o ? color.green : color.red),
+           color=(atmP_c >= atmP_o ? color.orange : color.red),
            display = showATM ? display.all : display.none)
 
 plotcandle(itmC_o, itmC_h, itmC_l, itmC_c, title="ITM Call",
@@ -128,45 +170,77 @@ plotcandle(itmC_o, itmC_h, itmC_l, itmC_c, title="ITM Call",
            display = showITM ? display.all : display.none)
 
 plotcandle(itmP_o, itmP_h, itmP_l, itmP_c, title="ITM Put",
-           color=(itmP_c >= itmP_o ? color.blue : color.red),
+           color=(itmP_c >= itmP_o ? color.purple : color.red),
            display = showITM ? display.all : display.none)
 
+// (strike labels removed by user request)
+
 // ─── Table ───────────────────────────────────
-var table t = table.new(position.bottom_right, 3, 7, border_width=1)
+var table t = table.new(position.bottom_right, 8, 8, border_width=1)
 
 if barstate.islast
-    // Header: Strike | Yest Low | Yest High | Today Low | Today High | LTP | Status
-    table.cell(t, 0, 0, "Strike", text_color=color.white, bgcolor=color.black)
-    table.cell(t, 0, 1, "Yest Low")
-    table.cell(t, 0, 2, "Yest High")
-    table.cell(t, 0, 3, "Today Low")
-    table.cell(t, 0, 4, "Today High")
-    table.cell(t, 0, 5, "LTP")
-    table.cell(t, 0, 6, "Status")
+    // Header: Field | ATM Call | ATM Put | ITM Call | ITM Put
+    table.cell(t, 0, 0, "Field", text_color=color.white, bgcolor=color.black)
+    table.cell(t, 0, 1, "ATM Call", text_color=color.white, bgcolor=color.gray)
+    table.cell(t, 0, 2, "ATM Put",  text_color=color.white, bgcolor=color.gray)
+    table.cell(t, 0, 3, "ITM Call", text_color=color.white, bgcolor=color.gray)
+    table.cell(t, 0, 4, "ITM Put",  text_color=color.white, bgcolor=color.gray)
 
-
-    // ATM Row: compute status for both call and put; prefer call-derived status if present
+    // compute statuses per instrument
     atmCallStatus = statusForInstrument(atmC_c, atmC_yHigh, atmC_yLow, atmC_todayOpen, true)
     atmPutStatus  = statusForInstrument(atmP_c, atmP_yHigh, atmP_yLow, atmP_todayOpen, false)
-    atmStatus = atmCallStatus != "SIDEWAYS" ? atmCallStatus : atmPutStatus
-    table.cell(t, 1, 0, str.tostring(int(atmStrike)))
-    table.cell(t, 1, 1, showVal(atmC_yLow))
-    table.cell(t, 1, 2, showVal(atmC_yHigh))
-    table.cell(t, 1, 3, showVal(atmC_l))
-    table.cell(t, 1, 4, showVal(atmC_h))
-    table.cell(t, 1, 5, showVal(atmC_c))
-    table.cell(t, 1, 6, atmStatus)
-
-    // ITM Row: compute status for both call and put; prefer call-derived status if present
     itmCallStatus = statusForInstrument(itmC_c, itmC_yHigh, itmC_yLow, itmC_todayOpen, true)
     itmPutStatus  = statusForInstrument(itmP_c, itmP_yHigh, itmP_yLow, itmP_todayOpen, false)
-    itmStatus = itmCallStatus != "SIDEWAYS" ? itmCallStatus : itmPutStatus
-    table.cell(t, 2, 0, str.tostring(int(itmCallStrike)))
-    table.cell(t, 2, 1, showVal(itmC_yLow))
-    table.cell(t, 2, 2, showVal(itmC_yHigh))
-    table.cell(t, 2, 3, showVal(itmC_l))
-    table.cell(t, 2, 4, showVal(itmC_h))
-    table.cell(t, 2, 5, showVal(itmC_c))
-    table.cell(t, 2, 6, itmStatus)
+
+    // Row 0: Strike
+    table.cell(t, 1, 0, "Strike")
+    table.cell(t, 1, 1, str.tostring(int(atmCallStrike)))
+    table.cell(t, 1, 2, str.tostring(int(atmPutStrike)))
+    table.cell(t, 1, 3, str.tostring(int(itmCallStrike)))
+    table.cell(t, 1, 4, str.tostring(int(itmPutStrike)))
+
+    // Row 1: Yest Low
+    table.cell(t, 2, 0, "Yest Low")
+    table.cell(t, 2, 1, showVal(atmC_yLow))
+    table.cell(t, 2, 2, showVal(atmP_yLow))
+    table.cell(t, 2, 3, showVal(itmC_yLow))
+    table.cell(t, 2, 4, showVal(itmP_yLow))
+
+    // Row 2: Yest High
+    table.cell(t, 3, 0, "Yest High")
+    table.cell(t, 3, 1, showVal(atmC_yHigh))
+    table.cell(t, 3, 2, showVal(atmP_yHigh))
+    table.cell(t, 3, 3, showVal(itmC_yHigh))
+    table.cell(t, 3, 4, showVal(itmP_yHigh))
+
+    // Row 3: Today Low
+    table.cell(t, 4, 0, "Today Low")
+    table.cell(t, 4, 1, showVal(atmC_l))
+    table.cell(t, 4, 2, showVal(atmP_l))
+    table.cell(t, 4, 3, showVal(itmC_l))
+    table.cell(t, 4, 4, showVal(itmP_l))
+
+    // Row 4: Today High
+    table.cell(t, 5, 0, "Today High")
+    table.cell(t, 5, 1, showVal(atmC_h))
+    table.cell(t, 5, 2, showVal(atmP_h))
+    table.cell(t, 5, 3, showVal(itmC_h))
+    table.cell(t, 5, 4, showVal(itmP_h))
+
+    // Row 5: LTP
+    table.cell(t, 6, 0, "LTP")
+    table.cell(t, 6, 1, showVal(atmC_c))
+    table.cell(t, 6, 2, showVal(atmP_c))
+    table.cell(t, 6, 3, showVal(itmC_c))
+    table.cell(t, 6, 4, showVal(itmP_c))
+
+    // Row 6: Status
+    table.cell(t, 7, 0, "Status")
+    table.cell(t, 7, 1, atmCallStatus, text_color=color.white, bgcolor=statusBg(atmCallStatus))
+    table.cell(t, 7, 2, atmPutStatus,  text_color=color.white, bgcolor=statusBg(atmPutStatus))
+    table.cell(t, 7, 3, itmCallStatus, text_color=color.white, bgcolor=statusBg(itmCallStatus))
+    table.cell(t, 7, 4, itmPutStatus,  text_color=color.white, bgcolor=statusBg(itmPutStatus))
+
+    // (strike labels removed by user request)
 
 
