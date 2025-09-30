@@ -1,0 +1,154 @@
+@version=5
+strategy("Intraday Candlestick Strategy", overlay=true, margin_long=100, margin_short=100)
+
+// Inputs
+lookback = input.int(3, "Lookback Period", minval=1, maxval=10)
+risk_per_trade = input.float(0.5, "Risk Per Trade (%)", minval=0.1, maxval=2.0)
+rr_ratio = input.float(1.0, "Risk-Reward Ratio", minval=0.5, maxval=3.0)
+stop_loss_pct = input.float(0.5, "Stop Loss (%)", minval=0.2, maxval=2.0)
+use_time_exit = input.bool(true, "Use Time-Based Exit")
+max_bars_hold = input.int(10, "Max Bars to Hold", minval=3, maxval=50)
+session = input.session("0915-1530", "Trading Session (IST)")
+
+// Session-Based Levels
+bool in_session = time("5", session)
+bool new_session = ta.change(time("D")) or (in_session and not in_session[1])
+float session_open = ta.valuewhen(new_session, open, 0)
+float session_high = ta.highest(high, lookback)
+float session_low = ta.lowest(low, lookback)
+float swing_high = ta.pivothigh(high, lookback, lookback)
+float swing_low = ta.pivotlow(low, lookback, lookback)
+
+// Plot Intraday Levels
+plot(in_session ? session_open : na, title="Session Open", color=color.green, linewidth=2, style=plot.style_linebr)
+plot(in_session ? session_high : na, title="Session High", color=color.blue, linewidth=2, style=plot.style_linebr)
+plot(in_session ? session_low : na, title="Session Low", color=color.purple, linewidth=2, style=plot.style_linebr)
+plot(in_session ? swing_high : na, title="Swing High", color=color.yellow, linewidth=1, style=plot.style_linebr)
+plot(in_session ? swing_low : na, title="Swing Low", color=color.fuchsia, linewidth=1, style=plot.style_linebr)
+
+// Candlestick Pattern Detection
+// Helper functions
+is_bullish_candle = close > open
+is_bearish_candle = close < open
+body_size = math.abs(close - open)
+upper_shadow = high - math.max(open, close)
+lower_shadow = math.min(open, close) - low
+range = high - low
+
+// Bullish Patterns
+is_hammer = is_bullish_candle and lower_shadow > 2 * body_size and upper_shadow < 0.2 * body_size
+is_bullish_engulfing = is_bearish_candle[1] and is_bullish_candle and close > open[1] and open < close[1]
+is_piercing_line = is_bearish_candle[1] and is_bullish_candle and open < low[1] and close > (open[1] + close[1]) / 2
+is_morning_star = is_bearish_candle[2] and body_size[1] < 0.3 * range[1] and is_bullish_candle and close > open[1]
+is_bullish_harami = is_bearish_candle[1] and is_bullish_candle and open > close[1] and close < open[1]
+is_inverted_hammer = is_bullish_candle and upper_shadow > 2 * body_size and lower_shadow < 0.2 * body_size
+is_three_white_soldiers = is_bullish_candle and is_bullish_candle[1] and is_bullish_candle[2] and close > close[1] and close[1] > close[2]
+is_bullish_doji_star = is_bearish_candle[1] and body_size < 0.1 * range and is_bullish_candle[1]
+is_dragonfly_doji = body_size < 0.1 * range and lower_shadow > 2 * upper_shadow
+is_bullish_belt_hold = is_bullish_candle and open == low and body_size > 0.5 * range and ta.crossover(close, ta.sma(close, 20))
+
+// Bearish Patterns
+is_shooting_star = is_bearish_candle and upper_shadow > 2 * body_size and lower_shadow < 0.2 * body_size
+is_bearish_engulfing = is_bullish_candle[1] and is_bearish_candle and close < open[1] and open > close[1]
+is_dark_cloud_cover = is_bullish_candle[1] and is_bearish_candle and open > high[1] and close < (open[1] + close[1]) / 2
+is_evening_star = is_bullish_candle[2] and body_size[1] < 0.3 * range[1] and is_bearish_candle and close < open[1]
+is_bearish_harami = is_bullish_candle[1] and is_bearish_candle and open < close[1] and close > open[1]
+is_hanging_man = is_bearish_candle and lower_shadow > 2 * body_size and upper_shadow < 0.2 * body_size
+is_three_black_crows = is_bearish_candle and is_bearish_candle[1] and is_bearish_candle[2] and close < close[1] and close[1] < close[2]
+is_bearish_doji_star = is_bullish_candle[1] and body_size < 0.1 * range and is_bearish_candle[1]
+is_gravestone_doji = body_size < 0.1 * range and upper_shadow > 2 * lower_shadow
+is_bearish_belt_hold = is_bearish_candle and open == high and body_size > 0.5 * range and ta.crossover(ta.sma(close, 20), close)
+
+// Pattern Labels
+if is_hammer
+    label.new(bar_index, high, "Hammer", style=label.style_label_down, color=color.green, textcolor=color.white)
+if is_bullish_engulfing
+    label.new(bar_index, high, "Bull Engulf", style=label.style_label_down, color=color.green, textcolor=color.white)
+if is_piercing_line
+    label.new(bar_index, high, "Piercing", style=label.style_label_down, color=color.green, textcolor=color.white)
+if is_morning_star
+    label.new(bar_index, high, "Morning Star", style=label.style_label_down, color=color.green, textcolor=color.white)
+if is_bullish_harami
+    label.new(bar_index, high, "Bull Harami", style=label.style_label_down, color=color.green, textcolor=color.white)
+if is_inverted_hammer
+    label.new(bar_index, high, "Inv Hammer", style=label.style_label_down, color=color.green, textcolor=color.white)
+if is_three_white_soldiers
+    label.new(bar_index, high, "3 White Soldiers", style=label.style_label_down, color=color.green, textcolor=color.white)
+if is_bullish_doji_star
+    label.new(bar_index, high, "Bull Doji Star", style=label.style_label_down, color=color.green, textcolor=color.white)
+if is_dragonfly_doji
+    label.new(bar_index, high, "Dragonfly Doji", style=label.style_label_down, color=color.green, textcolor=color.white)
+if is_bullish_belt_hold
+    label.new(bar_index, high, "Bull Belt Hold", style=label.style_label_down, color=color.green, textcolor=color.white)
+
+if is_shooting_star
+    label.new(bar_index, low, "Shooting Star", style=label.style_label_up, color=color.red, textcolor=color.white)
+if is_bearish_engulfing
+    label.new(bar_index, low, "Bear Engulf", style=label.style_label_up, color=color.red, textcolor=color.white)
+if is_dark_cloud_cover
+    label.new(bar_index, low, "Dark Cloud", style=label.style_label_up, color=color.red, textcolor=color.white)
+if is_evening_star
+    label.new(bar_index, low, "Evening Star", style=label.style_label_up, color=color.red, textcolor=color.white)
+if is_bearish_harami
+    label.new(bar_index, low, "Bear Harami", style=label.style_label_up, color=color.red, textcolor=color.white)
+if is_hanging_man
+    label.new(bar_index, low, "Hanging Man", style=label.style_label_up, color=color.red, textcolor=color.white)
+if is_three_black_crows
+    label.new(bar_index, low, "3 Black Crows", style=label.style_label_up, color=color.red, textcolor=color.white)
+if is_bearish_doji_star
+    label.new(bar_index, low, "Bear Doji Star", style=label.style_label_up, color=color.red, textcolor=color.white)
+if is_gravestone_doji
+    label.new(bar_index, low, "Gravestone Doji", style=label.style_label_up, color=color.red, textcolor=color.white)
+if is_bearish_belt_hold
+    label.new(bar_index, low, "Bear Belt Hold", style=label.style_label_up, color=color.red, textcolor=color.white)
+
+// Entry Conditions
+bool bullish_pattern = is_hammer or is_bullish_engulfing or is_piercing_line or is_morning_star or is_bullish_harami or 
+                      is_inverted_hammer or is_three_white_soldiers or is_bullish_doji_star or is_dragonfly_doji or is_bullish_belt_hold
+bool bearish_pattern = is_shooting_star or is_bearish_engulfing or is_dark_cloud_cover or is_evening_star or is_bearish_harami or 
+                       is_hanging_man or is_three_black_crows or is_bearish_doji_star or is_gravestone_doji or is_bearish_belt_hold
+
+// Support/Resistance Filters
+bool near_support = close <= session_low or close <= swing_low
+bool near_resistance = close >= session_high or close >= swing_high
+
+// Volume and Trend Confirmation
+bool volume_confirmed = ta.volume > ta.sma(ta.volume, 10)
+bool trend_confirmed_long = close > ta.sma(close, 20)
+bool trend_confirmed_short = close < ta.sma(close, 20)
+
+// Entry Logic
+long_condition = in_session and bullish_pattern and near_support and volume_confirmed and trend_confirmed_long
+short_condition = in_session and bearish_pattern and near_resistance and volume_confirmed and trend_confirmed_short
+
+// Risk Management
+float account_size = 100000  // ₹1,00,000 for Indian traders
+float risk_amount = account_size * (risk_per_trade / 100)
+float stop_loss_dist = close * (stop_loss_pct / 100)
+float position_size_long = risk_amount / stop_loss_dist
+float position_size_short = risk_amount / stop_loss_dist
+
+// Stop Loss and Take Profit
+float long_sl = close - stop_loss_dist
+float long_tp = close + (stop_loss_dist * rr_ratio)
+float short_sl = close + stop_loss_dist
+float short_tp = close - (stop_loss_dist * rr_ratio)
+
+// Time-Based Exit
+bool time_exit = use_time_exit and ta.barssince(long_condition or short_condition) >= max_bars_hold
+
+// Execute Trades
+if long_condition
+    strategy.entry("Long", strategy.long, qty=position_size_long)
+    strategy.exit("Long Exit", "Long", stop=long_sl, limit=long_tp)
+
+if short_condition
+    strategy.entry("Short", strategy.short, qty=position_size_short)
+    strategy.exit("Short Exit", "Short", stop=short_sl, limit=short_tp)
+
+if time_exit
+    strategy.close_all("Time Exit")
+
+// Plot Entry/Exit Signals
+plotshape(long_condition, title="Long Entry", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small)
+plotshape(short_condition, title="Short Entry", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
